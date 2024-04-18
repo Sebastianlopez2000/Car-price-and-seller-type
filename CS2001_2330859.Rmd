@@ -1,0 +1,505 @@
+---
+title: "CS5801 Coursework Template Proforma"
+author: "2330859"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document:
+    df_print: paged
+version: 1
+---
+
+```{r}
+# Add code here to load all the required libraries with `library()`.  
+# Do not include any `install.package()` for any required packages in this rmd file.
+
+library(ggplot2)
+library(readr)
+library(VIM)
+library(mice)
+library(vcdExtra)
+library(car)
+library(tidyverse)
+```
+
+
+# 1. Organise and clean the data
+
+## 1.1 Subset the data into the specific dataset allocated
+
+```{r}
+# Only change the value for SID 
+# Assign your student id into the variable SID, for example:
+SID <- 2330859                  # This is an example, replace 2101234 with your actual ID
+SIDoffset <- (SID %% 50) + 1    # Your SID mod 50 + 1
+
+load("car-analysis-data.Rda")
+# Now subset the car data set
+# Pick every 50th observation starting from your offset
+# Put into your data frame named mydf (you can rename it)
+mydf <- cars.analysis[seq(from=SIDoffset,to=nrow(cars.analysis),by=50),]
+```
+
+
+## 1.2 Data quality analysis plan
+
+I will find any NA or implausible values. These are significant because analyses could be affected by missing data – i.e. a trend line on a graph may not represent the true nature of the data. Implausible values can create outliers which also affects the regression line in modelling, still, outliers are plausible therefore implausibility must be well justified. Appropriate imputation methods will be used for variables with NA values starting with the variable with the highest number of NA values.
+I will also check that any implausible value was not chosen by the data owners for arbitrary imputation by checking the frequency of the value compared to other values. In this case, I would explore further to understand what the value meant and better understand how to impute the value. To keep as much of the data as possible, I will impute unknown values where appropriate. I will also check the levels in the categorical variables to check for misspellings and correct erroneous levels’ names.
+I will then convert all variables apart from price and mileage into factors because unlike price and mileage they are either binary, categorical or fixed values such as brand. 
+
+
+## 1.3 Data quality analysis findings
+
+```{r}
+# Create a new data frame to store the transformations
+mydf.comp <- mydf
+```
+
+```{r}
+# Check for any NAs
+no.NA <- sum(is.na(mydf.comp))                  # Gives a sum of the total NAs in the data frame
+paste("There are", no.NA,"NA values in the data. They can be found in the following variables:")
+
+colSums(is.na(mydf.comp))                       # Shows how many NAs are in each variable
+
+aggr(mydf)                                      # Visualizes the missing data in the data
+```
+Most NAs are in the mpg variables.
+
+```{r}
+# Impute max_mpg's NA values using its median 
+
+median_max_mpg <- median(mydf.comp$max_mpg[mydf.comp$max_mpg > 0], na.rm = TRUE)  # Find the median (excluding NA and negative values)
+
+mydf.comp$max_mpg[is.na(mydf.comp$max_mpg)] = median_max_mpg                      # Replace NA values in max_mpg with the median
+```
+
+```{r}
+# Compare its pre-imputation distribution to its post
+ggplot(data=mydf, aes(x=max_mpg)) + geom_histogram(bins = 10) + theme_linedraw() +ggtitle("Histogram of max_mpg without imputed median for NA values") + xlab("Max_mpg without imputed values")
+
+ggplot(data=mydf.comp, aes(x=max_mpg)) + geom_histogram(bins = 10) + theme_linedraw() +ggtitle("Histogram of max_mpg with imputed median for NA values") + xlab("Max_mpg with imputed values") 
+```
+This affects the distribution significantly. I will try Multiple Imputation by Chained Equations.
+
+```{r}
+# Impute all NAs in the data using mice
+mydf.mice <- mice(mydf)
+mydf.comp <- complete(mydf.mice)
+
+ggplot(data=mydf, aes(x=max_mpg)) + geom_histogram(bins = 10) + theme_linedraw() +ggtitle("Histogram of max_mpg without imputed 'mice' for NA values") + xlab("Max_mpg without imputed values")
+
+ggplot(data=mydf.comp, aes(x=max_mpg)) + geom_histogram(bins = 10) + theme_linedraw() +ggtitle("Histogram of max_mpg with imputed 'mice' for NA values") + xlab("Max_mpg with imputed values")
+
+```
+This method fits better.
+
+```{r}
+# Statistically summarize the data
+summary(mydf.comp)
+table(mydf.comp[mydf.comp < 0])
+```
+Year, mileage and price values all seem plausible. Negative values in max_mpg are implausible. It may be representative. I will verify using its frequency in cars.analysis.
+
+```{r}
+# Check if and how frequently -30 were used in cars.analysis
+summary(cars.analysis)
+table(cars.analysis[cars.analysis < 0])
+```
+101 ‘-30’ observations suggest it’s a code.
+
+```{r}
+# Check for other arbitrary imputations
+table(cars.analysis$max_mpg)
+table(mydf.comp$max_mpg)
+```
+0 mpg means the car is stationary. I will combine -30 to **0 as code for: cars that do not run**.
+
+```{r}
+# Convert negative observations in the max_mpg variable to 0
+mydf.comp$max_mpg[mydf.comp$max_mpg < 0] = 0
+table(mydf.comp$max_mpg)                          # Check that there are now eight 0 max_mpg values
+```
+
+A 390-litre car engine size is implausible.
+```{r}
+# Find out if there are other values as large
+table(mydf.comp$engine_size)
+```
+
+```{r}
+# Change 390 to 3.9
+mydf.comp$engine_size[mydf.comp$engine_size==390] = 3.9
+
+summary(mydf.comp$engine_size)
+```
+
+```{r}
+# Identify the levels of 'fuel'
+table(mydf.comp$fuel)                # 'Pertol' is a misspelling
+
+# Change the misspelled 'pertol' to the 'petrol' level
+mydf.comp[mydf.comp$fuel == "Pertol", "fuel" ] = "Petrol"
+```
+
+```{r}
+# Impute 'Unknown' values using Frequent Category Imputation
+mydf.comp$fuel[(mydf.comp$fuel=="Unknown")] <- names(which.max(table(mydf.comp$fuel)))
+
+table(mydf.comp$fuel)
+```
+
+```{r}
+# Check other categorical variable levels for errors
+table(mydf.comp$brand)
+table(mydf.comp$drivetrain) 
+```
+
+```{r}
+# Impute 'Unknown' values using Frequent Category Imputation
+mydf.comp$drivetrain[(mydf.comp$drivetrain=="Unknown")] <- names(which.max(table(mydf.comp$drivetrain)))
+
+table(mydf.comp$drivetrain)
+```
+
+Categorical and binary should be factors and numerical should be numerical for EDA.
+
+```{r}
+# Check to see if variables have been read in correctly
+str(mydf.comp)
+```
+
+```{r}
+# Convert all variables into appropriate data types
+
+columns <- names(mydf.comp)                                            
+mydf.comp[, columns] <- lapply(mydf.comp[,columns] , factor)    # Converts all columns into a factor
+
+mydf.comp$price <-as.numeric(mydf$price)                        # Convert numeric vectors from factor to numeric
+mydf.comp$mileage <- as.numeric(mydf$mileage)
+
+mydf.comp$engine_size <- as.character(mydf.comp$engine_size)
+mydf.comp$engine_size <- as.numeric(mydf.comp$engine_size)
+
+mydf.comp$max_mpg <- as.character(mydf.comp$max_mpg)
+mydf.comp$max_mpg <- as.numeric(mydf.comp$max_mpg)
+
+mydf.comp$min_mpg <- as.character(mydf.comp$min_mpg)
+mydf.comp$min_mpg <- as.numeric(mydf.comp$min_mpg)
+
+mydf.comp$year <- as.character(mydf.comp$year)
+mydf.comp$year <- as.numeric(mydf.comp$year)
+
+str(mydf.comp)                                                 # Shows that each variable has been correctly read in
+```
+
+
+## 1.4 Data cleaning  
+
+There were 124 NAs which can bias analysis outcomes. After visualizing the effect of median imputation and Multiple Imputation by Chained Equations, the latter was chosen because it better matched the original distribution. There were no errors found in year, price or mileage because all seemed plausible and there was no missingness.
+
+There was an implausible value (-30) in the max_mpg variable which I cross-referenced with the cars.analysis data to find 101 negative values, all -30. This suggests it’s an arbitrary imputation code perhaps suggesting the car is being sold for parts. Another code (0) was found and combined with -30 to represent malfunctioning cars. The reason is that 0 mpg means the car is stationary therefore cannot work, and thus is sold for parts.
+
+A 390-litre engine size is implausible and was likely supposed to be 3.9, which is more in line with the variable mean of 3.7. I amended two misspellings in ‘fuel’ and imputed unknown observations using mode imputation in ‘fuel’ and ‘drivetrain’. 
+
+Finally, R read the binary variables incorrectly, so I converted all variables into factors except for the numerical variables.
+
+
+# 2. Exploratory Data Analysis (EDA)
+
+## 2.1 EDA plan
+
+I will start by visualizing the relationship between mileage (numerical) and price (numerical) using a scatterplot because intuitively I know that generally, cars with more miles are cheaper to buy. If the graph suggests correlation I will justify it statistically using Fisher’s p test and the correlation coefficient, before running a linear regression model with both variables and checking that the Residuals and Q-Q plot look random and normal respectively. I will do the same for ‘year’ for the same reason.
+I will then visualize the binary variable relationships to price using boxplots. Finally, I will visualize the mpg variables using scatter plots as they are both numerical variables. To avoid heteroskedasticity later, I will plot histograms to compare and visualize multicollinearity. If there is any, I will transform the data using the natural logarithm.
+
+## 2.2 EDA execution  
+
+```{r}
+# Visualize the relationship between mileage and price
+ggplot(data=mydf.comp, aes(x=mileage, y=price)) + geom_point() + theme_linedraw() + ggtitle("Scatter plot of the relationship between price and mileage") + xlab("Price") + ylab("Mileage")
+```
+This scatter plot shows a negative relationship between price and mileage - the more mileage it has, the cheaper it is.
+```{r}
+# Numerically justify the graph
+cor.test(mydf.comp$mileage,mydf.comp$price)
+```
+The correlation value is closer to -1 which means the higher the X-axis value (Mileage), the lower the Y-axis value (Price).
+I can use a hypothesis test to confirm my finding: H_0:Price & Mileage are not correlated & H_1:Price & Mileage are corelated where $\alpha=0.05$.
+
+The p-value is: 2.2e-16 which is a lot smaller than alpha which means I have enough evidence to reject the null hypothesis. Price and mileage are correlated.
+
+```{r}
+# Create a linear regression model of price and mileage
+lm.price.mileage <- lm(formula = mydf.comp$price~mydf.comp$mileage)
+summary(lm.price.mileage)
+
+plot(lm.price.mileage)
+```
+The R^2 however is smaller than 0.5 suggesting it is not significant. Still the p-value suggests they are dependent and the intercept suggests that for every unit change in mileage, price decreases by 2.008e+00. Visually, the Residual Vs Fitted looks like a funnel suggesting hetroskedasticity.
+
+```{r}
+# Create a new variable for the log of 'price'
+mydf.comp$price.log <- log(mydf.comp$price)
+
+# Run the model again
+lm.price.log <- lm(formula = mydf.comp$price.log~mydf.comp$mileage)
+summary(lm.price.log)
+
+plot(lm.price.log)
+```
+The model is still heteroskedastic.
+
+```{r}
+# Visualize the relationship between year and price
+ggplot(data=mydf.comp, aes(x=year, y=price)) + geom_point() + theme_classic() + ggtitle("Scatter plot of price vs year") + xlab("Year") + ylab("Price") + theme(axis.text=element_text(size=7))
+```
+This scatter graph shows a positive relationship - the newer the car the more expensive it is.
+```{r}
+# Numerically justify the graph
+cor.test(mydf.comp$year,mydf.comp$price)
+```
+This correlation value is closer to 1 suggesting the more recent the year, the more expensive.
+Using the following hypotheses $H_0:Price & Mileage are not correlated$ & $H_1:Price & Mileage are corelated$ where $\alpha=0.05$ the null hypothesis is very small so I can rject the null hypothesis. Price and year are dependent.
+
+```{r}
+# Create a linear regression model of price and year
+lm.price.year <- lm(formula = mydf.comp$price~mydf.comp$year)
+summary(lm.price.year)
+
+plot(lm.price.year)
+```
+The r squared value is 26% - not statistically significant, however the intercepts suggest they are very significant because for every unit increase in year, the price reduces by 2.252e-04. The low r-squared could suggest lm is not a good model.
+Moreover, the Residual vs Fitted plot does not look random and has funnel shape which suggests there is heteroskedasticity.
+
+```{r}
+# Run the model again
+lm.year.log <- lm(formula = mydf.comp$price.log~mydf.comp$year)
+summary(lm.year.log)
+
+plot(lm.year.log)
+```
+The model is still heteroskedastic.
+
+
+```{r}
+# Visualize the relationship between the transmission and price
+ggplot(mydf.comp, aes(x=automatic_transmission, y=price)) + geom_boxplot() + theme_minimal() + ggtitle("Transmission type vs Price") + ylab("Price") + xlab("Transmission type (0=Not automatic, 1= Automatic)")
+```
+Cars with automatic transmission generally sell at a higher price for a median of 30,000.
+
+
+```{r}
+# Visualize the relationship between damaged and price
+ggplot(mydf.comp, aes(x=damaged, y=price)) + geom_boxplot() + theme_bw() + ggtitle("Price vs damaged") + xlab("Damaged (0=Not damaged, 1= Damaged") + ylab("Price")
+```
+Damaged cars are sold around 10,000 cheaper
+
+```{r}
+# Visualize the relationship between the seller type and price
+ggplot(mydf.comp, aes(x=first_owner, y=price)) + geom_boxplot() + theme_linedraw() + ggtitle("First owner vs Price") + ylab("Price") + xlab("First owner (0=No, 1=Yes)")
+```
+This boxplot shows that cars with only one owner sell at a higher price than those with multiple owners.
+
+```{r}
+# Visualize the relationship between the drivetrain and price
+ggplot(mydf.comp, aes(x=drivetrain, y=price)) + geom_boxplot() + theme_minimal() + ggtitle("Drivetrain type vs Price") + ylab("Price") + xlab("Drivetrain type")
+```
+Four wheel drive is more expensive followed (with a lot of overlap) by rear wheel drive – although it has a lower mean
+
+```{r}
+# Visualize the relationship between the fuel type and price
+ggplot(mydf.comp, aes(x=fuel, y=price)) + geom_boxplot() + theme_minimal() + ggtitle("Fuel type vs Price") + ylab("Price") + xlab("Fuel type")
+```
+Electric cars seem to be the most expensive cars while GPL cars are the cheapest. Most of the overlap is between cheaper hybrids and expensive petrol cars.
+
+```{r}
+# Visualize the relationship between max_mpg and price
+ggplot(data=mydf.comp, aes(x=max_mpg, y=price)) + geom_point() + theme_classic() + ggtitle("Scatter plot of price vs maximum miles per gallon (mpg)") + xlab("Maximum mpg") + ylab("Price") + geom_smooth(method = "lm", se = FALSE)
+```
+Though there is no particular trend, it could be argued there is a downward trend where price decreases as maximum mpg increases.
+
+```{r}
+# Visualize the relationship between min_mpg and price
+ggplot(data=mydf.comp, aes(x=min_mpg, y=price)) + geom_point() + theme_classic() + ggtitle("Scatter plot of price vs minimum miles per gallon (mpg)") + xlab("Minimum mpg") + ylab("Price") + geom_smooth(method = "lm", se = FALSE)
+```
+The same argument can be made that the larger the minimum mpg, the less expensive the car.
+
+```{r}
+# Visualize the relationship between heated seats, price and third row seating
+ggplot(mydf.comp, aes(x=heated_seats, y=price, fill=third_row_seating)) + geom_boxplot() + theme_bw() + ggtitle("Price vs heated seats and third row seating") + xlab("Heated seats") + ylab("Price")
+```
+Third row seating increases the price, there's little difference between heated third row seating but a large difference between no third row or heated seats and unheated third seats.
+
+```{r}
+# Visualize the relationship between bluetooth, price and navigation
+ggplot(mydf.comp, aes(x=bluetooth, y=price, fill=navigation_system)) + geom_boxplot() + theme_bw() + ggtitle("Price vs bluetooth and navigation sysetm") + xlab("Bluetooth") + ylab("Price")
+```
+Bluetooth increases cost but the combination of no bluetooth and a navigation system is more expensive that both bluetooth and navigation.
+
+```{r}
+# Visualize the relationship between engine_size and price
+ggplot(data=mydf.comp, aes(x=engine_size, y=price)) + geom_point() + theme_classic() + ggtitle("Scatter plot of price vs engine_size") + xlab("Engine size") + ylab("Price")
+```
+Larger engine sizes are generally more expensive, but there are a lot of expensive cars with smaller engines. 2 litre engines seem the most popular.
+
+```{r}
+# Visualize the relationship between brand and price
+
+ggplot(data=mydf.comp, aes(x=brand, y=price)) + geom_point() + theme_classic() + ggtitle("Scatter plot of price vs brand") + xlab("brand") + ylab("Price") + theme(axis.text=element_text(size=3.7))
+```
+Although most brands operate within the same price, some brand cater mid-to-high prices(Alfa, Porsche, Maserati), while others are more budget friendly (FIAT, Mitsubushi, Mazda)
+
+```{r}
+# Visualize 'brand' frequencies
+table(mydf.comp$brand)      # To find frequencies
+
+brand.count <- c(24,21,17,19,12,24,13,24,18,14,11,20,9,15,12,21,15,21,24,13,9,2,10,21,21)
+brand.name <- c("Alfa", "Audi", "BMW", "Cadillac", "Chevrolet", "FIAT", "Ford", "Honda", "Hyundai", "Jaguar", "Jeep", "Kia", "Land","Lexus","Maserati","Mazda","Mercedes-Benz","MINI","Mitsubishi","Nissan","Porsche","Suzuki","Toyota","Volkswagen","Volvo")
+
+barplot(brand.count, main="Bar chart of brand frequency in 'mydf.comp'", ylab="Frequency in 'mydf.comp'", names.arg=brand.name,  cex.names = 0.7, col="steelblue", density=c(100, 50, 50, 50, 50, 100, 50, 100, 50, 50, 50, 50, 50,50,50,50,50,50,100,50,50,50,50,50,50))
+```
+
+## 2.3 EDA summary of results
+
+The first scatter plot shows a negative relationship between price and mileage - the more mileage a car has, the cheaper it is. The correlation value was closer to -1 which means the higher the X-axis value (Mileage), the lower the Y-axis value (Price).
+
+If  $H_0:Price & Mileage are not correlated$ & $H_1:Price & Mileage are corelated$ where $\alpha=0.05$.
+
+The p-value is: 2.2e-16 which is a lot smaller than the alpha which means I have enough evidence to reject the null hypothesis. Price and mileage are correlated.
+
+The R^2 > 0.5 suggests it is not significant. Still, the p-value suggests they are dependent and the intercept suggests that for every unit change in mileage, the price decreases by 2.008e+00. Visually, the Residual vs. fitted looks like a funnel suggesting heteroskedasticity.
+The scatterplot suggests a positive relationship - the newer the car the more expensive it is.
+
+This correlation value is closer to 1 suggesting the more recent, the more expensive.
+Where hypotheses $H_0:Price & Mileage are not correlated$ & $H_1:Price & Mileage are corelated$ where $\alpha=0.05$ the null hypothesis is very small so I can reject the null hypothesis. Price and year are dependent.
+
+This correlation value is closer to 1 suggesting the more recent the year, the more expensive.
+Using the following hypotheses $H_0: not correlated$ & $H_1:Price & Mileage are corelated$ where $\alpha=0.05$ the null hypothesis is very small so I can reject the null hypothesis. Price and year are dependent.
+
+The model is still heteroskedastic.
+
+
+## 2.4 Additional insights and issues
+
+Cars with automatic transmissions generally sell at a higher price for a median of 30,000. Damaged cars are sold around 10,000 cheaper. This boxplot shows that cars with only one owner sell at a higher price than those with multiple owners. Four wheel drive is more expensive followed (with a lot of overlap) by rear wheel drive – although it has a lower mean
+
+Electric cars seem to be the most expensive cars while GPL cars are the cheapest. Most of the overlap is between cheaper hybrids and expensive petrol cars. Though there is no particular trend, it could be argued there is a downward trend where price decreases as maximum mpg increases.
+
+The same argument can be made that the larger the minimum mpg, the less expensive the car. Third-row seating increases the price. Bluetooth increases cost but the combination of no Bluetooth and a navigation system is more expensive than both Bluetooth and navigation.
+
+Larger engine sizes are generally more expensive, but there are a lot of expensive cars with smaller engines. 2-litre engines seem the most popular.
+
+
+# 3. Modelling
+
+## 3.1 Explain your analysis plan
+
+Year and mileage seem to have linear relationships with price (dependent), however they are heteroscedastic and despite transforming the dependent variable using the natural logarithm, the linear regression was still heteroscedastic.
+To model price as the numeric dependent along with a combination of numeric, categorical and binary independent variables, I will use the linear model function. This will provide Fisher’s p-value which I can compare to my hypothesis and alpha. If larger than alpha, the p-value will confirm the statistical significance of the model. The output will also give coefficients which indicate if they are significant, denoted by ‘*’,’**’,’***’ and how they react in response to the target variable.
+My approach will be to use Analysis of Covariance (ANCOVA) because of the mixed independent and numeric dependent variables. I will create a maximal multiple linear regression model using the lm() function. I will then use the step() function to find the minimum adequate model. Then I will use the summary() function on the minimum adequate model to understand the significance of each variable.
+I will also create a logistic regression model and check which explains the price more effectively.
+
+## 3.2 Build a model for car price
+
+```{r}
+# Build a maximal multiple linear regression model with price as the dependent
+maximal.mlr <- lm(mydf.comp$price~.,data = mydf.comp)
+summary(maximal.mlr)
+```
+
+```{r}
+# Use the step() function to get the minimum adequate model
+model.1 <- step(maximal.mlr)
+summary(model.1)
+plot(model.1)
+```
+
+```{r}
+# Check for variance inflation factor
+vif(maximal.mlr)
+
+vif(model.1)
+```
+
+```{r}
+# Logistic regression
+lm.model <- lm(log(mydf.comp$price)~., data = mydf.comp)
+summary(lm.model)
+step(lm.model)
+```
+
+## 3.3 Critique model using relevant diagnostics
+
+Fisher's p-value is smaller than $\alpha$ which means that the variables in this model affect price, in other words, the price is affected by these variables.
+The variables that most affect price are brand, where some brands such as Suzuki, Volvo, Maserati, Mercedes-Benz, and FIAT. The price will increase by 1.528e+03 if the car has a navigation system and will decrease by -3.024e+03 if it has Bluetooth.
+For every price reduction by -4.335e+05 the year will increase by 1.124e+02, while for every price reduction, the minimum mpg increases by 1.337e+02.
+Akaike's information criterion has established that the minimum adequate model is:
+mydf.comp$price ~ brand + year + mileage + drivetrain + min_mpg + 
+    max_mpg + navigation_system + bluetooth + heated_seats + 
+    price.log
+
+multicollinearity was found in the logistic regression model, so the minimum adequate model’s plots(Residual vs fitting) have a funnel shape suggesting heteroscedasticity while the Q-Q plot looks normal  with a slight ‘s’ shape forming due to outliers
+
+## 3.4 Suggest and implement improvements to your model
+
+Heteroscedasticity can be resolved by transforming the dependent variable using the natural logarithm. One of the principles of conventional linear regression is that constant variance of residuals is broken by heteroscedasticity. Another transformation could be the box cox transformation which involves stabilising non-constant variance and non-normality.
+
+I propose model.1 as the model to predict pricing because Fisher's p-value makes it statistically significant. It has also been transformed into a minimal adequate model from a maximal model.
+
+# 4. Modelling another dependent variable
+
+## 4.1 Model the likelihood of a car being sold by the first owner (using the first_owner variable provided).
+
+# Provide a plan of analysis based on relevant EDA for this attribute
+```{r}
+# Visualize first owner and price
+ggplot(mydf.comp, aes(x=first_owner, y=price)) + geom_boxplot() + theme_linedraw() + ggtitle("First owner vs Price") + ylab("Price") + xlab("First owner (0=No, 1=Yes)")
+
+# Visualize first owner and year
+ggplot(mydf.comp, aes(x=first_owner, y=mileage)) + geom_boxplot() + theme_linedraw() + ggtitle("First owner vs Mileage") + ylab("Mileage") + xlab("First owner (0=No, 1=Yes)")
+```
+
+To account model the probability of a binary being true I must use a generalized linear model. I will use all variables and then use the stepwise function to find the minimum adequate model. In order to measure the probability of a car being sold by its first owner I must transform the target variable so that it P=first owner can surpass 1. R automatically calculates the logit. I will then find the odds ratios to better understand the coefficients and explain the most significant variables and their impact on first_owner=1.
+
+# Execute the plan
+
+```{r}
+# Maximal generalized linear model
+model.2 <- glm(mydf.comp$first_owner ~ mydf.comp$price + mydf.comp$brand + mydf.comp$year + mydf.comp$mileage + mydf.comp$engine_size + mydf.comp$automatic_transmission + mydf.comp$fuel + mydf.comp$drivetrain + mydf.comp$min_mpg + mydf.comp$max_mpg + mydf.comp$damaged + mydf.comp$navigation_system + mydf.comp$bluetooth + mydf.comp$third_row_seating + mydf.comp$heated_seats, data = mydf.comp, family = "binomial")
+
+summary(model.2)
+```
+
+# Address any weaknesses of the model and explore methods to improve it
+
+```{r}
+# Find the minimum adequate model
+step(model.2)
+```
+
+```{r}
+# Create the minimal adequate model from step
+model.3 <- glm(formula = mydf.comp$first_owner ~ mydf.comp$year + mydf.comp$mileage + 
+    mydf.comp$engine_size + mydf.comp$automatic_transmission + 
+    mydf.comp$min_mpg + mydf.comp$max_mpg + mydf.comp$bluetooth + 
+    mydf.comp$third_row_seating + mydf.comp$heated_seats, family = "binomial", 
+    data = mydf.comp)
+```
+
+# Justify and propose one model. Describe, explain and critique it.
+
+```{r}
+# Summarize significant coefficients
+summary(model.2)   
+
+# Summarize significant coefficients
+summary(model.3)    
+
+# Find odds ratio to interpret coefficients
+exp(coef(model.3))
+```
+
+For every one unit increase in **the coefficient**, the odds of being the first owner decrease (if the value is below 1) or increase (if it is above 2). For example, For every one unit increase in the brand being volkwagen, the odds of selling the car as a first owner increases by 7.166632e-01.
+
+The likelihood of being a first_owner (versus not being the first_owner) increase by a factor of 2.382e-0.1 for every year. The log odd's of first_owner must be linear with the other independent variables to stabalise non constant variation and non-normal data. The model has undergone a maximal model and then used Akaike's information criterion to create the minimal adequate model, which show how important year, mileage and heated seats are to selling as a first owner.
